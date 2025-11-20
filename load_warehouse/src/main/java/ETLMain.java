@@ -30,7 +30,7 @@ public class ETLMain {
             // 2. Kết nối với database control
             Connection connControl = connectControlDB(db);
 
-            // 3. Kiểm tra tiến trình P3
+            // 3. Kiểm tra tiến trình P3?
             checkProcessP3(connControl);
 
             // 4. Đọc cấu hình ETL từ table config_database. Lấy ra: db_staging, transform_table, db_warehouse, db_host, db_port, db_username, db_password
@@ -58,7 +58,7 @@ public class ETLMain {
                         cfg.get("transform_table")
                 );
 
-                // 9. Ghi log status = SUCCESS, lưu message kết quả và hiển thị ra console
+                // 9. Ghi log status = SUCCESS, lưu message kết quả số dòng được thêm  và hiển thị ra console
                 updateProcessLog(connControl, logId, "SUCCESS",
                         "ETL thành công. Tổng số dòng: " + rows);
 
@@ -77,13 +77,8 @@ public class ETLMain {
     }
 
     public DatabaseConnector loadControlFile() throws Exception {
-        java.io.File f = new java.io.File(pathFile);
         DatabaseConnector db = new DatabaseConnector(pathFile);
-
-        if (db == null) {
-            throw new Exception("Không thể parse file control.xml");
-        }
-
+        if (db == null) throw new Exception("Không thể parse file control.xml");
         System.out.println("Đã load file control.xml thành công");
         return db;
     }
@@ -98,8 +93,12 @@ public class ETLMain {
     }
 
     public boolean isProcessSuccess(Connection conn) throws SQLException {
-        String sql = "SELECT 1 FROM process_log WHERE process_code='P3' AND status='SUCCESS' "
-                + "ORDER BY ended_at DESC LIMIT 1";
+        String sql = """
+            SELECT 1 
+            FROM process_log 
+            WHERE process_code='P3' AND status='SUCCESS'
+            ORDER BY ended_at DESC LIMIT 1
+        """;
 
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery(sql)) {
@@ -141,8 +140,9 @@ public class ETLMain {
     }
 
     public void createWarehouse(DbConfig rootCfg, DbConfig warehouseCfg) throws Exception {
+        // 5.1.Gọi procedure sp_create_warehouse_table để tạo bảng
         Util.createWarehouse(rootCfg, warehouseCfg);
-        System.out.println("Đã kiểm tra/tạo warehouse thành công.");
+        System.out.println("Đã kiểm tra/tạo warehouse qua stored procedure.");
     }
 
     public Connection connectStaging(Map<String, String> cfg) throws Exception {
@@ -176,8 +176,11 @@ public class ETLMain {
     public long insertProcessLog(Connection conn, int sourceId, String processCode,
                                  String status, String message) throws SQLException {
 
-        String sql = "INSERT INTO process_log (source_id, status, started_at, process_code, message) "
-                + "VALUES (?, ?, NOW(), ?, ?)";
+        String sql = """
+            INSERT INTO process_log 
+            (source_id, status, started_at, process_code, message)
+            VALUES (?, ?, NOW(), ?, ?)
+        """;
 
         try (PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             ps.setInt(1, sourceId);
@@ -205,8 +208,10 @@ public class ETLMain {
     public int loadToWarehouse(Connection connStaging, Connection connWarehouse,
                                String dbStaging, String tableStaging) throws SQLException {
 
-        String sqlStage = "SELECT number_value, full_date, range_group, is_weekend, is_even FROM "
-                + dbStaging + "." + tableStaging;
+        String sqlStage = """
+            SELECT number_value, full_date, range_group, is_weekend, is_even
+            FROM %s.%s
+        """.formatted(dbStaging, tableStaging);
 
         List<Map<String, Object>> stageData = new ArrayList<>();
 
@@ -219,10 +224,7 @@ public class ETLMain {
                 LocalDate fullDate = rs.getDate("full_date").toLocalDate();
                 int dateKey = Integer.parseInt(fullDate.toString().replace("-", ""));
 
-                String raw = rs.getString("number_value");
-                String normalized = normalizeNumberValue(raw);
-
-                row.put("number_value", normalized);
+                row.put("number_value", normalizeNumberValue(rs.getString("number_value")));
                 row.put("full_date", fullDate);
                 row.put("is_weekend", rs.getInt("is_weekend"));
                 row.put("is_even", rs.getInt("is_even"));
@@ -243,130 +245,6 @@ public class ETLMain {
         return after - before;
     }
 
-    public static void loadFactPrize(List<Map<String, Object>> stageData,
-                                     Connection connWarehouse,
-                                     Map<String, Integer> numMap) throws SQLException {
-
-
-        // 0. Lấy danh sách record đã tồn tại để tránh insert trùng
-        Set<String> existingFacts = new HashSet<>();
-
-        try (Statement st = connWarehouse.createStatement();
-             ResultSet rs = st.executeQuery("SELECT date_key, number_key FROM fact_prize")) {
-
-            while (rs.next()) {
-                int dk = rs.getInt("date_key");
-                int nk = rs.getInt("number_key");
-                existingFacts.add(dk + "_" + nk);
-            }
-        }
-
-        // Sort theo ngày tăng dần để xử lý đúng thứ tự thời gian
-        // ví dụ: ngày 05/01 xuất hiện trước ngày 01/01 → sai logic
-        stageData.sort(Comparator.comparing(r -> (LocalDate) r.get("full_date")));
-
-        // Lưu ngày xuất hiện cuối cùng của mỗi number_key
-        Map<Integer, LocalDate> lastSeen = new HashMap<>();
-
-
-        Map<Integer, Integer> totalDrawsPerDate = new HashMap<>();
-        for (Map<String, Object> row : stageData) {
-            int dateKey = (int) row.get("date_key");
-            totalDrawsPerDate.put(dateKey, totalDrawsPerDate.getOrDefault(dateKey, 0) + 1);
-        }
-
-        String insertSql = """
-        INSERT INTO fact_prize
-        (date_key, number_key, occurrence_count, total_draws, probability_value, days_since_last)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """;
-
-        try (PreparedStatement ps = connWarehouse.prepareStatement(insertSql)) {
-
-            for (Map<String, Object> row : stageData) {
-
-                // Lấy date_key và ngày hiện tại
-                int dateKey = (int) row.get("date_key");
-                LocalDate currentDate = (LocalDate) row.get("full_date");
-
-                // Tìm number_key tương ứng từ map
-                String numberValue = (String) row.get("number_value");
-                Integer numberKey = numMap.get(numberValue);
-                if (numberKey == null) continue; // không có trong dim_number
-
-                String factKey = dateKey + "_" + numberKey;
-                if (existingFacts.contains(factKey))
-                    continue; // skip duplicate
-
-                int totalDraws = totalDrawsPerDate.get(dateKey);
-
-                // occurrence = 1 vì stage có 1 record / 1 lần xuất hiện
-                int occurrence = 1;
-
-                // Tính xác suất xuất hiện trong ngày:
-                // probability = 1 / total_draws
-                BigDecimal probability = BigDecimal.valueOf(1.0 / totalDraws);
-
-                // Tính days_since_last:
-                // Nếu số chưa từng xuất hiện → NULL
-                // Nếu đã xuất hiện → số ngày chênh lệch
-                LocalDate lastDate = lastSeen.get(numberKey);
-                Integer daysSinceLast = (lastDate == null)
-                        ? null
-                        : (int) ChronoUnit.DAYS.between(lastDate, currentDate);
-
-                // Insert fact_prize
-                ps.setInt(1, dateKey);
-                ps.setInt(2, numberKey);
-                ps.setInt(3, occurrence);
-                ps.setInt(4, totalDraws);
-                ps.setBigDecimal(5, probability);
-
-                if (daysSinceLast == null)
-                    ps.setNull(6, Types.INTEGER);
-                else
-                    ps.setInt(6, daysSinceLast);
-
-                ps.addBatch();
-
-                // Cập nhật lastSeen
-                lastSeen.put(numberKey, currentDate);
-            }
-
-            ps.executeBatch();
-        }
-
-        // Update dim_number để lưu last appeared của từng số
-        String updateDim = "UPDATE dim_number SET last_appeared_date = ? WHERE number_key = ?";
-        try (PreparedStatement ps2 = connWarehouse.prepareStatement(updateDim)) {
-            for (Map.Entry<Integer, LocalDate> e : lastSeen.entrySet()) {
-                ps2.setDate(1, Date.valueOf(e.getValue()));
-                ps2.setInt(2, e.getKey());
-                ps2.addBatch();
-            }
-            ps2.executeBatch();
-        }
-    }
-
-    // Chuẩn hóa number_value để tránh các số bị khác nhau do có 0 ở đầu
-    public static String normalizeNumberValue(String raw) {
-        if (raw == null) return null;
-        raw = raw.trim();
-        try {
-            int v = Integer.parseInt(raw);
-            return String.valueOf(v);
-        } catch (NumberFormatException ex) {
-            return raw;
-        }
-    }
-
-    public int countRows(Connection conn, String table) throws SQLException {
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + table)) {
-            return rs.next() ? rs.getInt(1) : 0;
-        }
-    }
-
     public void loadDimDate(List<Map<String, Object>> stageData, Connection conn) throws SQLException {
         Set<Integer> existing = new HashSet<>();
 
@@ -377,14 +255,8 @@ public class ETLMain {
 
         String sql = """
         INSERT IGNORE INTO dim_date (
-            date_key,
-            full_date,
-            day_of_month,
-            month_of_year,
-            year_value,
-            year_month_value,
-            day_name,
-            is_weekend
+            date_key, full_date, day_of_month, month_of_year,
+            year_value, year_month_value, day_name, is_weekend
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """;
 
@@ -401,7 +273,7 @@ public class ETLMain {
                 ps.setInt(3, d.getDayOfMonth());
                 ps.setInt(4, d.getMonthValue());
                 ps.setInt(5, d.getYear());
-                ps.setString(6, String.format("%04d-%02d", d.getYear(), d.getMonthValue()));
+                ps.setString(6, "%04d-%02d".formatted(d.getYear(), d.getMonthValue()));
                 ps.setString(7, toVietnameseDayName(d.getDayOfWeek()));
                 ps.setInt(8, (int) row.get("is_weekend"));
 
@@ -412,23 +284,21 @@ public class ETLMain {
         }
     }
 
-
-
     private static String toVietnameseDayName(DayOfWeek dow) {
-        switch (dow) {
-            case MONDAY: return "Thứ 2";
-            case TUESDAY: return "Thứ 3";
-            case WEDNESDAY: return "Thứ 4";
-            case THURSDAY: return "Thứ 5";
-            case FRIDAY: return "Thứ 6";
-            case SATURDAY: return "Thứ 7";
-            case SUNDAY: return "Chủ nhật";
-            default: return dow.name();
-        }
+        return switch (dow) {
+            case MONDAY -> "Thứ 2";
+            case TUESDAY -> "Thứ 3";
+            case WEDNESDAY -> "Thứ 4";
+            case THURSDAY -> "Thứ 5";
+            case FRIDAY -> "Thứ 6";
+            case SATURDAY -> "Thứ 7";
+            case SUNDAY -> "Chủ nhật";
+        };
     }
 
     public Map<String, Integer> loadDimNumber(List<Map<String, Object>> stageData,
                                               Connection connWarehouse) throws SQLException {
+
         Set<String> existing = new HashSet<>();
 
         try (Statement st = connWarehouse.createStatement();
@@ -438,9 +308,7 @@ public class ETLMain {
 
         String sql = """
         INSERT INTO dim_number (
-            number_value,
-            is_even,
-            last_digit
+            number_value, is_even, last_digit
         ) VALUES (?, ?, ?)
         """;
 
@@ -448,28 +316,24 @@ public class ETLMain {
 
         try (PreparedStatement ps = connWarehouse.prepareStatement(sql)) {
             for (Map<String, Object> row : stageData) {
-                String normalizedVal = (String) row.get("number_value");
-                if (normalizedVal == null) continue;
-
-                if (existing.contains(normalizedVal) || normalizedValuesToInsert.contains(normalizedVal)) {
-                    continue;
-                }
+                String val = (String) row.get("number_value");
+                if (val == null) continue;
+                if (existing.contains(val) || normalizedValuesToInsert.contains(val)) continue;
 
                 int lastDigit = 0;
-                try {
-                    lastDigit = Integer.parseInt(normalizedVal) % 10;
-                } catch (NumberFormatException ignored) {}
+                try { lastDigit = Integer.parseInt(val) % 10; } catch (Exception ignore) {}
 
-                ps.setString(1, normalizedVal);
+                ps.setString(1, val);
                 ps.setInt(2, (int) row.get("is_even"));
                 ps.setInt(3, lastDigit);
                 ps.addBatch();
 
-                normalizedValuesToInsert.add(normalizedVal);
+                normalizedValuesToInsert.add(val);
             }
             ps.executeBatch();
         }
 
+        // Load map number_value -> number_key
         Map<String, Integer> map = new HashMap<>();
 
         try (Statement st = connWarehouse.createStatement();
@@ -479,6 +343,111 @@ public class ETLMain {
                 map.put(rs.getString("number_value"), rs.getInt("number_key"));
         }
         return map;
+    }
+
+
+    public static void loadFactPrize(List<Map<String, Object>> stageData,
+                                     Connection connWarehouse,
+                                     Map<String, Integer> numMap) throws SQLException {
+
+        // Lấy danh sách record đã tồn tại để tránh insert trùng
+        Set<String> existingFacts = new HashSet<>();
+
+        try (Statement st = connWarehouse.createStatement();
+             ResultSet rs = st.executeQuery("SELECT date_key, number_key FROM fact_prize")) {
+
+            while (rs.next())
+                existingFacts.add(rs.getInt("date_key") + "_" + rs.getInt("number_key"));
+        }
+
+        // Sort theo ngày tăng dần để xử lý đúng thứ tự thời gian
+        // ví dụ: ngày 05/01 xuất hiện trước ngày 01/01 → sai logic
+        stageData.sort(Comparator.comparing(r -> (LocalDate) r.get("full_date")));
+
+        Map<Integer, LocalDate> lastSeen = new HashMap<>();
+        Map<Integer, Integer> totalDrawsPerDate = new HashMap<>();
+
+        for (Map<String, Object> row : stageData) {
+            int dateKey = (int) row.get("date_key");
+            totalDrawsPerDate.put(dateKey, totalDrawsPerDate.getOrDefault(dateKey, 0) + 1);
+        }
+
+        String insertSql = """
+            INSERT INTO fact_prize 
+            (date_key, number_key, occurrence_count, total_draws, probability_value, days_since_last)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """;
+
+        try (PreparedStatement ps = connWarehouse.prepareStatement(insertSql)) {
+            for (Map<String, Object> row : stageData) {
+
+                int dateKey = (int) row.get("date_key");
+                LocalDate currentDate = (LocalDate) row.get("full_date");
+
+                String numberValue = (String) row.get("number_value");
+                Integer numberKey = numMap.get(numberValue);
+                if (numberKey == null) continue;
+
+                String key = dateKey + "_" + numberKey;
+                if (existingFacts.contains(key)) continue;
+
+                int totalDraws = totalDrawsPerDate.get(dateKey);
+                BigDecimal probability = BigDecimal.valueOf(1.0 / totalDraws);
+
+                // Tính days_since_last:
+                // Nếu số chưa từng xuất hiện → NULL
+                // Nếu đã xuất hiện → số ngày chênh lệch
+                LocalDate lastDate = lastSeen.get(numberKey);
+                Integer daysSinceLast = (lastDate == null)
+                        ? null
+                        : (int) ChronoUnit.DAYS.between(lastDate, currentDate);
+
+                ps.setInt(1, dateKey);
+                ps.setInt(2, numberKey);
+                ps.setInt(3, 1);
+                ps.setInt(4, totalDraws);
+                ps.setBigDecimal(5, probability);
+
+                if (daysSinceLast == null)
+                    ps.setNull(6, Types.INTEGER);
+                else
+                    ps.setInt(6, daysSinceLast);
+
+                ps.addBatch();
+                // Cập nhật lastSeen
+                lastSeen.put(numberKey, currentDate);
+            }
+            ps.executeBatch();
+        }
+
+        //  // Update dim_number để lưu last appeared của từng số
+        String updateDim = "UPDATE dim_number SET last_appeared_date=? WHERE number_key=?";
+        try (PreparedStatement ps2 = connWarehouse.prepareStatement(updateDim)) {
+            for (Map.Entry<Integer, LocalDate> e : lastSeen.entrySet()) {
+                ps2.setDate(1, Date.valueOf(e.getValue()));
+                ps2.setInt(2, e.getKey());
+                ps2.addBatch();
+            }
+            ps2.executeBatch();
+        }
+    }
+
+    public static String normalizeNumberValue(String raw) {
+        if (raw == null) return null;
+        raw = raw.trim();
+        try {
+            int v = Integer.parseInt(raw);
+            return String.valueOf(v);
+        } catch (NumberFormatException ex) {
+            return raw;
+        }
+    }
+
+    public int countRows(Connection conn, String table) throws SQLException {
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + table)) {
+            return rs.next() ? rs.getInt(1) : 0;
+        }
     }
 
 

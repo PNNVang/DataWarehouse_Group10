@@ -14,8 +14,6 @@ public class Util {
                     prize VARCHAR(50),
                     number_value VARCHAR(50),
                     full_date VARCHAR(50),
-                    is_weekend VARCHAR(10),
-                    is_even VARCHAR(10),
                     load_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
                 """, tableName);

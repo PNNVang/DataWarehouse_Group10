@@ -2,44 +2,50 @@ import java.sql.*;
 import java.util.HashMap;
 import java.util.Map;
 
-class Util {
+public class Util {
     // Lấy cấu hình từ bảng config_database
     public static Map<String, String> getConfigDatabase(Connection conn) throws SQLException {
         Map<String, String> config = new HashMap<>();
+
         String sql = "SELECT config_key, config_value FROM config_database";
+
         try (Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
+
             while (rs.next()) {
                 config.put(rs.getString("config_key"), rs.getString("config_value"));
             }
         }
+
         return config;
     }
 
-    // Tạo database + gọi Stored Procedure tạo bảng warehouse
-    public static void createWarehouse(DbConfig rootConfig, DbConfig warehouseConfig) throws SQLException {
+    // 5.1. Gọi procedure sp_prepare_warehouse_db để tạo database warehouse
+    public static String createWarehouseDb(Connection connControl, int sourceId) throws SQLException {
 
-        String dbName = warehouseConfig.getDatabase();
-        String urlRoot = "jdbc:mysql://" + rootConfig.getHost() + ":" + rootConfig.getPort() + "/";
-        String urlWarehouse = "jdbc:mysql://" + rootConfig.getHost() + ":" + rootConfig.getPort() + "/" + dbName;
+        CallableStatement cs = connControl.prepareCall("{CALL sp_prepare_warehouse_db(?, ?)}");
+        cs.setInt(1, sourceId);
+        cs.registerOutParameter(2, Types.VARCHAR);
 
-        // 1. Tạo database nếu chưa có
-        try (Connection conn = DriverManager.getConnection(urlRoot, rootConfig.getUsername(), rootConfig.getPassword())) {
-            Statement stmt = conn.createStatement();
-            stmt.execute(
-                    "CREATE DATABASE IF NOT EXISTS " + dbName +
-                            " CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"
-            );
-            System.out.println("[OK] Database " + dbName + " đã tồn tại hoặc vừa được tạo mới.");
-        }
+        cs.execute();
 
-        // Gọi stored procedure sp_create_warehouse_tables
-        try (Connection conn = DriverManager.getConnection(urlWarehouse, warehouseConfig.getUsername(), warehouseConfig.getPassword())) {
+        String warehouseSchema = cs.getString(2);
 
-            CallableStatement cs = conn.prepareCall("{CALL sp_create_warehouse_tables()}");
-            cs.execute();
+        System.out.println("[P4] Đảm bảo schema warehouse tồn tại: " + warehouseSchema);
 
-            System.out.println("[OK] Các bảng warehouse đã được tạo qua Stored Procedure.");
-        }
+        return warehouseSchema;
+    }
+
+    // GỌI PROCEDURE: Tạo bảng dim_date, dim_number, fact_prize
+    public static void createWarehouseTables(Connection connControl, int sourceId, String warehouseSchema)
+            throws SQLException {
+
+        CallableStatement cs = connControl.prepareCall("{CALL sp_create_warehouse_tables(?, ?)}");
+        cs.setInt(1, sourceId);
+        cs.setString(2, warehouseSchema);
+
+        cs.execute();
+
+        System.out.println("[P4] Tạo bảng dim/fact cho warehouse hoàn tất.");
     }
 }

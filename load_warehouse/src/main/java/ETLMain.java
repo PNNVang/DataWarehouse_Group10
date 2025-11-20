@@ -30,19 +30,19 @@ public class ETLMain {
             // 2. Kết nối với database control
             Connection connControl = connectControlDB(db);
 
-            // 3. Kiểm tra tiến trình P3?
+            // 3. Kiểm tra tiến trình P3
             checkProcessP3(connControl);
 
-            // 4. Đọc cấu hình ETL từ table config_database. Lấy ra: db_staging, transform_table, db_warehouse, db_host, db_port, db_username, db_password
+            // 4. Đọc cấu hình ETL từ table config_database.
             Map<String, String> cfg = loadEtlConfig(connControl);
 
-            DbConfig rootCfg = buildRootConfig(cfg);
-            DbConfig warehouseCfg = buildWarehouseConfig(cfg);
+            // 5. Kiểm tra schema warehouse (warehouse_schema) đã tồn tại chưa
+            String warehouseSchema = Util.createWarehouseDb(connControl, sourceId);
 
-            // 5. Kiểm tra database warehouse có tồn tại chưa?
-            createWarehouse(rootCfg, warehouseCfg);
+            // 5.2. Gọi procedure sp_create_warehouse_tables để dim_date, dim_number, fact_prize
+            Util.createWarehouseTables(connControl, sourceId, warehouseSchema);
 
-            // 6. Kết nối database staging và warehouse
+            // 6. Kết nối database staging & warehouse
             try (
                     Connection connStaging = connectStaging(cfg);
                     Connection connWarehouse = connectWarehouse(cfg)
@@ -53,43 +53,46 @@ public class ETLMain {
 
                 // 8. Load dữ liệu từ table stg_lottery_data_transform qua table warehouse
                 int rows = loadToWarehouse(
-                        connStaging, connWarehouse,
+                        connStaging,
+                        connWarehouse,
                         cfg.get("staging_schema"),
                         cfg.get("transform_table")
                 );
 
                 // 9. Ghi log status = SUCCESS, lưu message kết quả số dòng được thêm  và hiển thị ra console
                 updateProcessLog(connControl, logId, "SUCCESS",
-                        "ETL thành công. Tổng số dòng: " + rows);
+                        "Nạp dữ liệu vào warehouse thành công. Tổng số dòng thêm mới: " + rows);
 
-                System.out.println("[SUCCESS] ETL hoàn tất, thêm " + rows + " dòng");
+                System.out.println("[SUCCESS] ETL hoàn tất - Tổng số dòng nạp: " + rows);
 
             } catch (Exception ex) {
+
                 updateProcessLog(connControl, logId, "FAILED",
-                        "Lỗi khi load dữ liệu: " + ex.getMessage());
+                        "Lỗi khi nạp dữ liệu vào warehouse: " + ex.getMessage());
                 throw ex;
             }
 
         } catch (Exception e) {
-            System.err.println("Lỗi ETL tổng: " + e.getMessage());
+            System.err.println("❌ Lỗi ETL tổng: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
+
     public DatabaseConnector loadControlFile() throws Exception {
         DatabaseConnector db = new DatabaseConnector(pathFile);
-        if (db == null) throw new Exception("Không thể parse file control.xml");
-        System.out.println("Đã load file control.xml thành công");
+        if (db == null)
+            throw new Exception("Không thể đọc file control.xml");
         return db;
     }
 
     public void checkProcessP3(Connection conn) throws Exception {
         if (!isProcessSuccess(conn)) {
-            String msg = "Tiến trình P3 chưa SUCCESS. Dừng ETL!";
+            String msg = "Tiến trình P3 chưa SUCCESS → Dừng ETL Warehouse!";
             insertProcessLog(conn, sourceId, "P" + sourceId, "FAILED", msg);
             throw new Exception(msg);
         }
-        System.out.println("P3 đã SUCCESS → tiếp tục ETL");
+        System.out.println("P3 SUCCESS → Tiếp tục ETL Warehouse");
     }
 
     public boolean isProcessSuccess(Connection conn) throws SQLException {
@@ -102,60 +105,42 @@ public class ETLMain {
 
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery(sql)) {
+
             return rs.next();
         }
     }
 
+
     public Connection connectControlDB(DatabaseConnector db) throws Exception {
         Connection conn = db.getConnection();
-        if (conn == null) throw new SQLException("Không thể kết nối database control");
+        if (conn == null)
+            throw new SQLException("Không thể kết nối database control");
+
         System.out.println("Kết nối database control thành công");
         return conn;
     }
 
     public Map<String, String> loadEtlConfig(Connection conn) throws Exception {
         Map<String, String> cfg = Util.getConfigDatabase(conn);
-        System.out.println("Đã đọc cấu hình ETL");
+        System.out.println("Đã tải cấu hình ETL");
         return cfg;
     }
 
-    public DbConfig buildRootConfig(Map<String, String> cfg) {
-        DbConfig root = new DbConfig();
-        root.setHost(cfg.get("db_host"));
-        root.setPort(cfg.get("db_port"));
-        root.setDatabase("");
-        root.setUsername(cfg.get("db_username"));
-        root.setPassword(cfg.get("db_password"));
-        return root;
-    }
-
-    public DbConfig buildWarehouseConfig(Map<String, String> cfg) {
-        DbConfig w = new DbConfig();
-        w.setHost(cfg.get("db_host"));
-        w.setPort(cfg.get("db_port"));
-        w.setDatabase(cfg.get("warehouse_schema"));
-        w.setUsername(cfg.get("db_username"));
-        w.setPassword(cfg.get("db_password"));
-        return w;
-    }
-
-    public void createWarehouse(DbConfig rootCfg, DbConfig warehouseCfg) throws Exception {
-        // 5.1.Gọi procedure sp_create_warehouse_table để tạo bảng
-        Util.createWarehouse(rootCfg, warehouseCfg);
-        System.out.println("Đã kiểm tra/tạo warehouse qua stored procedure.");
-    }
-
     public Connection connectStaging(Map<String, String> cfg) throws Exception {
+
         return DriverManager.getConnection(
                 buildJdbcUrl(cfg.get("staging_schema"), cfg),
-                cfg.get("db_username"), cfg.get("db_password")
+                cfg.get("db_username"),
+                cfg.get("db_password")
         );
     }
 
     public Connection connectWarehouse(Map<String, String> cfg) throws Exception {
+
         return DriverManager.getConnection(
                 buildJdbcUrl(cfg.get("warehouse_schema"), cfg),
-                cfg.get("db_username"), cfg.get("db_password")
+                cfg.get("db_username"),
+                cfg.get("db_password")
         );
     }
 
@@ -170,28 +155,27 @@ public class ETLMain {
 
     public long insertRunningLog(Connection conn) throws Exception {
         return insertProcessLog(conn, sourceId, "P" + sourceId, "RUNNING",
-                "Bắt đầu ETL warehouse");
+                "Bắt đầu ETL nạp dữ liệu Warehouse");
     }
 
     public long insertProcessLog(Connection conn, int sourceId, String processCode,
                                  String status, String message) throws SQLException {
 
         String sql = """
-            INSERT INTO process_log 
-            (source_id, status, started_at, process_code, message)
+            INSERT INTO process_log (source_id, status, started_at, process_code, message)
             VALUES (?, ?, NOW(), ?, ?)
         """;
 
         try (PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+
             ps.setInt(1, sourceId);
             ps.setString(2, status);
             ps.setString(3, processCode);
             ps.setString(4, message);
             ps.executeUpdate();
 
-            try (ResultSet rs = ps.getGeneratedKeys()) {
-                return rs.next() ? rs.getLong(1) : 0;
-            }
+            ResultSet rs = ps.getGeneratedKeys();
+            return rs.next() ? rs.getLong(1) : 0;
         }
     }
 
@@ -219,6 +203,7 @@ public class ETLMain {
              ResultSet rs = st.executeQuery(sqlStage)) {
 
             while (rs.next()) {
+
                 Map<String, Object> row = new HashMap<>();
 
                 LocalDate fullDate = rs.getDate("full_date").toLocalDate();
@@ -237,8 +222,8 @@ public class ETLMain {
         int before = countRows(connWarehouse, "fact_prize");
 
         loadDimDate(stageData, connWarehouse);
-        Map<String, Integer> numberKeyMap = loadDimNumber(stageData, connWarehouse);
-        loadFactPrize(stageData, connWarehouse, numberKeyMap);
+        Map<String, Integer> numMap = loadDimNumber(stageData, connWarehouse);
+        loadFactPrize(stageData, connWarehouse, numMap);
 
         int after = countRows(connWarehouse, "fact_prize");
 
@@ -246,10 +231,12 @@ public class ETLMain {
     }
 
     public void loadDimDate(List<Map<String, Object>> stageData, Connection conn) throws SQLException {
+
         Set<Integer> existing = new HashSet<>();
 
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery("SELECT date_key FROM dim_date")) {
+
             while (rs.next()) existing.add(rs.getInt(1));
         }
 
@@ -264,6 +251,7 @@ public class ETLMain {
 
             for (var row : stageData) {
                 int dateKey = (int) row.get("date_key");
+
                 if (existing.contains(dateKey)) continue;
 
                 LocalDate d = (LocalDate) row.get("full_date");
@@ -296,6 +284,7 @@ public class ETLMain {
         };
     }
 
+
     public Map<String, Integer> loadDimNumber(List<Map<String, Object>> stageData,
                                               Connection connWarehouse) throws SQLException {
 
@@ -303,22 +292,25 @@ public class ETLMain {
 
         try (Statement st = connWarehouse.createStatement();
              ResultSet rs = st.executeQuery("SELECT number_value FROM dim_number")) {
+
             while (rs.next()) existing.add(rs.getString(1));
         }
 
         String sql = """
-        INSERT INTO dim_number (
-            number_value, is_even, last_digit
-        ) VALUES (?, ?, ?)
+        INSERT INTO dim_number (number_value, is_even, last_digit)
+        VALUES (?, ?, ?)
         """;
 
-        Set<String> normalizedValuesToInsert = new HashSet<>();
+        Set<String> toInsert = new HashSet<>();
 
         try (PreparedStatement ps = connWarehouse.prepareStatement(sql)) {
+
             for (Map<String, Object> row : stageData) {
+
                 String val = (String) row.get("number_value");
                 if (val == null) continue;
-                if (existing.contains(val) || normalizedValuesToInsert.contains(val)) continue;
+
+                if (existing.contains(val) || toInsert.contains(val)) continue;
 
                 int lastDigit = 0;
                 try { lastDigit = Integer.parseInt(val) % 10; } catch (Exception ignore) {}
@@ -328,48 +320,51 @@ public class ETLMain {
                 ps.setInt(3, lastDigit);
                 ps.addBatch();
 
-                normalizedValuesToInsert.add(val);
+                toInsert.add(val);
             }
+
             ps.executeBatch();
         }
 
-        // Load map number_value -> number_key
         Map<String, Integer> map = new HashMap<>();
 
         try (Statement st = connWarehouse.createStatement();
              ResultSet rs = st.executeQuery("SELECT number_key, number_value FROM dim_number")) {
 
-            while (rs.next())
+            while (rs.next()) {
                 map.put(rs.getString("number_value"), rs.getInt("number_key"));
+            }
         }
+
         return map;
     }
 
+    public static void loadFactPrize(
+            List<Map<String, Object>> stageData,
+            Connection connWarehouse,
+            Map<String, Integer> numMap
+    ) throws SQLException {
 
-    public static void loadFactPrize(List<Map<String, Object>> stageData,
-                                     Connection connWarehouse,
-                                     Map<String, Integer> numMap) throws SQLException {
-
-        // Lấy danh sách record đã tồn tại để tránh insert trùng
         Set<String> existingFacts = new HashSet<>();
 
         try (Statement st = connWarehouse.createStatement();
              ResultSet rs = st.executeQuery("SELECT date_key, number_key FROM fact_prize")) {
 
-            while (rs.next())
+            while (rs.next()) {
                 existingFacts.add(rs.getInt("date_key") + "_" + rs.getInt("number_key"));
+            }
         }
 
-        // Sort theo ngày tăng dần để xử lý đúng thứ tự thời gian
-        // ví dụ: ngày 05/01 xuất hiện trước ngày 01/01 → sai logic
+        // Sắp xếp theo ngày
         stageData.sort(Comparator.comparing(r -> (LocalDate) r.get("full_date")));
 
         Map<Integer, LocalDate> lastSeen = new HashMap<>();
-        Map<Integer, Integer> totalDrawsPerDate = new HashMap<>();
 
+        Map<Integer, Integer> totalDrawsPerDate = new HashMap<>();
         for (Map<String, Object> row : stageData) {
             int dateKey = (int) row.get("date_key");
-            totalDrawsPerDate.put(dateKey, totalDrawsPerDate.getOrDefault(dateKey, 0) + 1);
+            totalDrawsPerDate.put(dateKey,
+                    totalDrawsPerDate.getOrDefault(dateKey, 0) + 1);
         }
 
         String insertSql = """
@@ -379,6 +374,7 @@ public class ETLMain {
         """;
 
         try (PreparedStatement ps = connWarehouse.prepareStatement(insertSql)) {
+
             for (Map<String, Object> row : stageData) {
 
                 int dateKey = (int) row.get("date_key");
@@ -392,11 +388,9 @@ public class ETLMain {
                 if (existingFacts.contains(key)) continue;
 
                 int totalDraws = totalDrawsPerDate.get(dateKey);
+
                 BigDecimal probability = BigDecimal.valueOf(1.0 / totalDraws);
 
-                // Tính days_since_last:
-                // Nếu số chưa từng xuất hiện → NULL
-                // Nếu đã xuất hiện → số ngày chênh lệch
                 LocalDate lastDate = lastSeen.get(numberKey);
                 Integer daysSinceLast = (lastDate == null)
                         ? null
@@ -414,26 +408,30 @@ public class ETLMain {
                     ps.setInt(6, daysSinceLast);
 
                 ps.addBatch();
-                // Cập nhật lastSeen
+
                 lastSeen.put(numberKey, currentDate);
             }
+
             ps.executeBatch();
         }
 
-        //  // Update dim_number để lưu last appeared của từng số
+        // Update ngày xuất hiện cuối
         String updateDim = "UPDATE dim_number SET last_appeared_date=? WHERE number_key=?";
         try (PreparedStatement ps2 = connWarehouse.prepareStatement(updateDim)) {
-            for (Map.Entry<Integer, LocalDate> e : lastSeen.entrySet()) {
+
+            for (var e : lastSeen.entrySet()) {
                 ps2.setDate(1, Date.valueOf(e.getValue()));
                 ps2.setInt(2, e.getKey());
                 ps2.addBatch();
             }
+
             ps2.executeBatch();
         }
     }
 
     public static String normalizeNumberValue(String raw) {
         if (raw == null) return null;
+
         raw = raw.trim();
         try {
             int v = Integer.parseInt(raw);
@@ -446,6 +444,7 @@ public class ETLMain {
     public int countRows(Connection conn, String table) throws SQLException {
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + table)) {
+
             return rs.next() ? rs.getInt(1) : 0;
         }
     }
@@ -453,9 +452,10 @@ public class ETLMain {
 
     public static void main(String[] args) {
         if (args.length < 2) {
-            System.err.println("java -jar load_warehouse.jar <control.xml> <source_id>");
+            System.err.println("Cú pháp: java -jar load_warehouse.jar <control.xml> <source_id>");
             System.exit(1);
         }
+
         ETLMain wc = new ETLMain(args[0], Integer.parseInt(args[1]), null);
         wc.run();
     }

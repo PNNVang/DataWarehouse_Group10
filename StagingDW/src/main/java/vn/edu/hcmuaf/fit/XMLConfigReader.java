@@ -7,7 +7,7 @@ import java.io.File;
 
 public class XMLConfigReader {
 
-    // 1. Đọc cấu hình kết nối database từ file control.xml
+    // 2. Đọc cấu hình kết nối database từ file control.xml
     public static DbConfig readConfig(String xmlFilePath) {
         DbConfig config = new DbConfig();
         try {
@@ -21,6 +21,7 @@ public class XMLConfigReader {
             Document doc = dBuilder.parse(xmlFile);
             doc.getDocumentElement().normalize();
 
+            // 3. Lấy dữ liệu cấu hình: host, port, database, username, password
             config.setHost(doc.getElementsByTagName("host").item(0).getTextContent());
             config.setPort(doc.getElementsByTagName("port").item(0).getTextContent());
             config.setDatabase(doc.getElementsByTagName("database").item(0).getTextContent());

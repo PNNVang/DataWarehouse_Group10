@@ -26,19 +26,17 @@ public class LotteryCrawler {
     private static final DateTimeFormatter CREATED_AT_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
     private static final LocalTime DRAW_TIME = LocalTime.of(19, 0);
 
-    DatabaseConnector connection ;
+    DatabaseConnector connection;
     Connection conn;
 
     public LotteryCrawler(String pathFile, int sourceId, String dateStr) {
         connection = new DatabaseConnector(pathFile);
-
         conn = connection.getConnection();
-        if (conn == null|| connection == null) {
+        if (conn == null || connection == null) {
             System.err.println("Kết nối database thất bại");
+            return;
         }
         try {
-            // Lấy source_id từ tham số đầu vào (mặc định là 1)
-
             LocalDateTime startTime = LocalDateTime.now();
             DateTimeFormatter inputFormatter = DateTimeFormatter.ofPattern("dd-MM-yyyy");
             LocalDate date;
@@ -52,53 +50,51 @@ public class LotteryCrawler {
             LocalDate today = LocalDate.now();
             LocalTime now = LocalTime.now();
 
-            // Validate ngày
+            // 1.1.3 Kiểm tra thông số date
+            // 1.3.4 date > hôm nay
             if (date.isAfter(today)) {
-                System.out.println("Ngày nhập vào nằm trong tương lai. Dừng chương trình.");
-              insertProcessLog(sourceId, "FAIL", startTime, LocalDateTime.now(), "VALIDATE_DATE");
+                // 1.3.5 insert vào process_log với status= FAIL
+                insertProcessLog(sourceId, "FAIL", startTime, LocalDateTime.now(), "VALIDATE_DATE");
+                // 1.3.6 Thông báo ngày nhập không hợp lệ
+                System.out.println("Ngày nhập không hợp lệ");
                 return;
             }
-
+            // 1.2.4 date = hôm nay và giờ < 19h
             if (date.isEqual(today) && now.isBefore(LocalTime.of(19, 0))) {
-                System.out.println("Hiện tại chưa đến 19h. Kết quả xổ số chưa được công bố.");
-                System.out.println("Vui lòng chạy lại sau 19h tối.");
+                // 1.2.5 insert vào process_log với status= FAIL
                 insertProcessLog(sourceId, "FAIL", startTime, LocalDateTime.now(), "NOT_PUBLISHED_YET");
+                // 1.2.6 Thông báo kết quả sổ xố chưa được công bố
+                System.out.println("Hiện tại chưa đến 19h. Kết quả xổ số chưa được công bố.");
                 return;
             }
-            System.out.println("Source ID: " + sourceId);
-            System.out.println("Bắt đầu crawl dữ liệu cho ngày: " + date.format(inputFormatter));
-
-           crawlLottery(date.format(inputFormatter), sourceId);
+            // 1.1.4 date hợp lệ
+            crawlLottery(date.format(inputFormatter), sourceId);
 
         } catch (Exception e) {
             System.err.println("Lỗi khi chạy chương trình: " + e.getMessage());
             e.printStackTrace();
+        } finally {
+            // Đóng kết nối database
+            closeConnection();
         }
-
     }
-
 
     static class LotteryResult {
         String date;
         String prizeName;
         String numberValue;
-        int isWeekend;
-        int isEven;
         String createdAt;
 
-        public LotteryResult(String date, String prizeName, String numberValue,
-                             int isWeekend, int isEven, String createdAt) {
+        public LotteryResult(String date, String prizeName, String numberValue, String createdAt) {
             this.date = date;
             this.prizeName = prizeName;
             this.numberValue = numberValue;
-            this.isWeekend = isWeekend;
-            this.isEven = isEven;
             this.createdAt = createdAt;
         }
 
         public String toCsv() {
-            return String.format("%s,%s,%s,%d,%d,%s",
-                    prizeName, numberValue, date, isWeekend, isEven, createdAt);
+            return String.format("%s,%s,%s,%s",
+                    prizeName, numberValue, date, createdAt);
         }
     }
 
@@ -117,39 +113,36 @@ public class LotteryCrawler {
     }
 
     public static void main(String[] args) {
+        // 1.1.0 Load file control
+        // [input: control.xml, source_id, date (default = today)]
         int sourceId = (args.length > 0 && args[1] != null && !args[1].isEmpty())
                 ? Integer.parseInt(args[1])
                 : 1;
-        String pathFile = args[0];
+//        String pathFile = args[0];
+        String pathFile = "D:\\Datawarehouse\\fileXML\\control.xml";
 
-        String dateStr = (args.length > 2 && args[2] != null && !args[2].isEmpty())
-                ? args[2]
-                : null;
+//        String dateStr = (args.length > 2 && args[2] != null && !args[2].isEmpty())
+//                ? args[2]
+//                : null;
+        String dateStr = "18-11-2025";
         LotteryCrawler crawler = new LotteryCrawler(pathFile, sourceId, dateStr);
     }
+
     public void crawlLottery(String date, int sourceId) {
         LocalDateTime startTime = LocalDateTime.now();
         WebDriver driver = null;
 
         try {
-            // Lấy thông tin từ config_source
+            // 1.1.5 Lấy ra các trường thông tin trong config_source với điều kiện source_id nhập vào
             ConfigSource config = getConfigSource(sourceId);
             if (config == null) {
                 System.err.println("Không tìm thấy thông tin config cho source_id: " + sourceId);
+                // 1.2.6 insert vào process_log với status= FAIL
                 insertProcessLog(sourceId, "FAIL", startTime, LocalDateTime.now(), "CONFIG_NOT_FOUND");
                 return;
             }
-
-            System.out.println("Source Name: " + config.sourceName);
-            System.out.println("Source URL Template: " + config.sourceUrl);
-            System.out.println("File Location: " + config.fileLocation);
-
-            // Build URL với date
+            // 1.1.6 Khởi tạo ChromeDriver và truy cập đến trang crawl
             String url = String.format(config.sourceUrl, date);
-            System.out.println("Crawling URL: " + url);
-            System.out.println("Target Date: " + date);
-
-            // Setup Chrome driver
             ChromeOptions options = new ChromeOptions();
             options.addArguments("--headless");
             options.addArguments("--no-sandbox");
@@ -160,16 +153,12 @@ public class LotteryCrawler {
 
             driver = new ChromeDriver(options);
             driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
-
-            // Navigate to URL
             driver.get(url);
 
-            // Wait for table to load
+            // 1.1.7 Duyệt từng giải thưởng
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(15));
             wait.until(ExpectedConditions.presenceOfElementLocated(
                     By.cssSelector("table.bkqtinhmienbac")));
-
-            // Find table miền Bắc
             WebElement mbTable = driver.findElement(By.cssSelector("table.bkqtinhmienbac"));
             if (mbTable == null) {
                 insertProcessLog(sourceId, "FAIL", startTime, LocalDateTime.now(), "TABLE_NOT_FOUND");
@@ -187,9 +176,6 @@ public class LotteryCrawler {
             }
 
             LocalDate dateObj = LocalDate.parse(actualDate, INPUT_DATE_FORMAT);
-            int dayOfWeek = dateObj.getDayOfWeek().getValue();
-            int isWeekend = (dayOfWeek == 6 || dayOfWeek == 7) ? 1 : 0;
-            System.out.println("Is Weekend: " + isWeekend);
 
             boolean hasResult = false;
             try {
@@ -206,11 +192,8 @@ public class LotteryCrawler {
                 insertProcessLog(sourceId, "FAIL", startTime, LocalDateTime.now(), "RESULT_NOT_AVAILABLE");
                 return;
             }
-
             List<LotteryResult> results = new ArrayList<>();
             String createdAt = ZonedDateTime.now().format(CREATED_AT_FORMAT);
-
-            // Prize mapping
             String[][] prizeMappings = {
                     {"giaidb", "Giải Đặc Biệt"},
                     {"giai1", "Giải Nhất"},
@@ -222,7 +205,7 @@ public class LotteryCrawler {
                     {"giai7", "Giải Bảy"}
             };
 
-            // Crawl từng giải
+            // 1.1.8 Thêm vào danh sách
             for (String[] prizeMapping : prizeMappings) {
                 String prizeClass = prizeMapping[0];
                 String prizeName = prizeMapping[1];
@@ -239,17 +222,12 @@ public class LotteryCrawler {
                             String numberValue = numDiv.getText().trim();
 
                             if (!numberValue.isEmpty()) {
-                                char lastDigit = numberValue.charAt(numberValue.length() - 1);
-                                int isEven = (Character.getNumericValue(lastDigit) % 2 == 0) ? 1 : 0;
-
                                 LotteryResult result = new LotteryResult(
-                                        actualDate, prizeName, numberValue,
-                                        isWeekend, isEven, createdAt
+                                        actualDate, prizeName, numberValue, createdAt
                                 );
 
                                 results.add(result);
-                                System.out.printf("%s: %s (Even: %d)%n",
-                                        prizeName, numberValue, isEven);
+                                System.out.printf("%s: %s%n", prizeName, numberValue);
                             }
                         }
                     }
@@ -257,21 +235,17 @@ public class LotteryCrawler {
                     System.out.println("Warning: Error crawling " + prizeName + ": " + e.getMessage());
                 }
             }
-
+            // 1.1.9 Kiểm tra nếu có dữ liệu
             if (!results.isEmpty()) {
                 String fileName = String.format("data_%s.csv", dateObj.format(FILE_DATE_FORMAT));
                 String filePath = config.fileLocation + "\\" + fileName;
-
+                // 1.1.10 Xuất file và lưu
                 exportToCsv(results, filePath, sourceId, startTime);
 
-                System.out.println("--------------------------------------------------");
-                System.out.println("Success! Đã crawl " + results.size() + " kết quả");
-                System.out.println("File saved: " + filePath);
-
-                insertProcessLog(sourceId, "SUCCESS", startTime, LocalDateTime.now(),
-                        "P1 " );
+                // 1.1.11 insert vào process_log với status= SUCCESS
+                insertProcessLog(sourceId, "SUCCESS", startTime, LocalDateTime.now(), "P1");
             } else {
-                System.out.println("Warning: Không có kết quả nào được crawl");
+                // 1.2.10 insert vào process_log với status= FAIL
                 insertProcessLog(sourceId, "FAIL", startTime, LocalDateTime.now(),
                         "Không có kết quả nào được crawl");
             }
@@ -282,6 +256,7 @@ public class LotteryCrawler {
             insertProcessLog(sourceId, "FAIL", startTime, LocalDateTime.now(),
                     "Lỗi: " + e.getMessage());
         } finally {
+            // 1.1.12 Đóng ChromeDriver
             if (driver != null) {
                 driver.quit();
             }
@@ -291,11 +266,11 @@ public class LotteryCrawler {
     private void exportToCsv(List<LotteryResult> results, String filePath, int sourceId,
                              LocalDateTime startTime) throws IOException {
         try (FileWriter writer = new FileWriter(filePath, java.nio.charset.StandardCharsets.UTF_8)) {
-            // Write BOM for UTF-8
+
             writer.write('\ufeff');
 
             // Write header
-            writer.write("prize,number_value,full_date,is_weekend,is_even,created_at\n");
+            writer.write("prize,number_value,full_date,created_at\n");
 
             // Write data
             for (LotteryResult result : results) {
@@ -372,9 +347,7 @@ public class LotteryCrawler {
         }
         return false;
     }
-    /**
-     * Cập nhật log trong bảng process_log
-     */
+
     public boolean updateProcessLog(int processId, int sourceId, String status, String processCode) {
         String query;
         if (processCode != null) {
@@ -407,5 +380,20 @@ public class LotteryCrawler {
             e.printStackTrace();
         }
         return false;
+    }
+
+    /**
+     * Đóng kết nối database
+     */
+    private void closeConnection() {
+        try {
+            if (conn != null && !conn.isClosed()) {
+                conn.close();
+                System.out.println("Đã đóng kết nối database thành công");
+            }
+        } catch (SQLException e) {
+            System.err.println("Lỗi khi đóng kết nối database: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 }

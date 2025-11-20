@@ -26,8 +26,8 @@ public class CsvLoader {
     private static int loadCsv(Connection conn, File csvFile) throws Exception {
         int count = 0;
         String sql = """
-                INSERT INTO stg_lottery_data (prize, number_value, full_date, is_weekend, is_even, load_timestamp)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO stg_lottery_data (prize, number_value, full_date, load_timestamp)
+                VALUES (?, ?, ?, ?)
                 """;
         try (BufferedReader reader = new BufferedReader(new FileReader(csvFile));
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -36,13 +36,11 @@ public class CsvLoader {
             while ((line = reader.readLine()) != null) {
                 if (skip) { skip = false; continue; }
                 String[] p = line.split(",");
-                if (p.length < 5) continue;
+                if (p.length < 4) continue;
                 ps.setString(1, p[0].trim());
                 ps.setString(2, p[1].trim());
                 ps.setString(3, p[2].trim());
-                ps.setString(4, p[3].trim());
-                ps.setString(5, p[4].trim());
-                ps.setTimestamp(6, Timestamp.valueOf(LocalDateTime.now()));
+                ps.setTimestamp(4, Timestamp.valueOf(LocalDateTime.now()));
                 ps.addBatch();
                 count++;
             }

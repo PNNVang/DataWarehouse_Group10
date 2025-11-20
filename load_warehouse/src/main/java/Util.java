@@ -33,7 +33,7 @@ class Util {
             System.out.println("[OK] Database " + dbName + " đã tồn tại hoặc vừa được tạo mới.");
         }
 
-        // Gọi stored procedure sp_create_warehouse_tables để tạo bảng
+        // Gọi stored procedure sp_create_warehouse_tables
         try (Connection conn = DriverManager.getConnection(urlWarehouse, warehouseConfig.getUsername(), warehouseConfig.getPassword())) {
 
             CallableStatement cs = conn.prepareCall("{CALL sp_create_warehouse_tables()}");

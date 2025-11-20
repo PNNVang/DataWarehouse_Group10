@@ -4,16 +4,17 @@ import java.sql.*;
 import java.time.LocalDateTime;
 
 public class ProcessLogger {
-    public static void log(Connection conn, int sourceId, String status, LocalDateTime startTime, java.time.LocalDateTime endTime, String processCode) {
+    public static void log(Connection conn, int sourceId, String status, LocalDateTime startTime, java.time.LocalDateTime endTime, String processCode, String message) {
         try {
             // Ghi log tiến trình
-            String insertSql = "INSERT INTO process_log (source_id, status, started_at, ended_at, process_code) VALUES (?, ?, ?, ?, ?)";
+            String insertSql = "INSERT INTO process_log (source_id, status, started_at, ended_at, process_code, message) VALUES (?, ?, ?, ?, ?, ?)";
             try (PreparedStatement pstmt = conn.prepareStatement(insertSql)) {
                 pstmt.setInt(1, sourceId);
                 pstmt.setString(2, status);
                 pstmt.setString(3, startTime.toString());
                 pstmt.setString(4, endTime.toString());
                 pstmt.setString(5, processCode);
+                pstmt.setString(6, message);
                 pstmt.executeUpdate();
             }
 

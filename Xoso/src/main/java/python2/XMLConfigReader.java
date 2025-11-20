@@ -12,16 +12,14 @@ public class XMLConfigReader {
     public static DbConfig readConfig(String xmlFilePath) {
         DbConfig config = new DbConfig();
         try {
+//            2. Load file
             File xmlFile = new File(xmlFilePath);
             if (!xmlFile.exists()) {
+//                1.2.2 Thông báo "File cấu hình không tồn tại"
                 System.err.println("File cấu hình không tồn tại: " + xmlFilePath);
                 return null;
             }
 
-            if (!xmlFile.canRead()) {
-                System.err.println("Không thể đọc file cấu hình: " + xmlFilePath);
-                return null;
-            }
             DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
             DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
             Document doc = dBuilder.parse(xmlFile);
